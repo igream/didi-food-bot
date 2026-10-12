@@ -1,0 +1,15 @@
+# Secretos y variables de entorno
+.env
+session.json
+
+# Perfil del navegador local y cookies
+chrome_profile/
+*.pma
+
+# Archivos compilados y cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
