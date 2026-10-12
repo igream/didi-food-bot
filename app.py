@@ -6,7 +6,7 @@ from playwright.async_api import async_playwright
 import config
 from notifier import send_telegram_message
 
-app = FastAPI(title="DiDi Food Monitor API", version="1.0.0")
+app = FastAPI(title="Store Status Monitor API", version="1.0.0")
 
 # Si se configuró la sesión por variable de entorno (Render Secret)
 session_env = os.getenv("DIDI_SESSION_DATA")
@@ -27,7 +27,7 @@ state = {
     "total_checks": 0
 }
 
-async def check_didi_status():
+async def check_didi_status(force_notify: bool = False):
     """Realiza la consulta a DiDi Food con Playwright de forma asíncrona."""
     timestamp = time.strftime("%H:%M:%S")
     state["total_checks"] += 1
@@ -52,7 +52,14 @@ async def check_didi_status():
         if os.path.exists(config.SESSION_FILE):
             context_kwargs["storage_state"] = config.SESSION_FILE
 
-        browser = await p.chromium.launch(headless=True, args=browser_args)
+        launch_kwargs = {
+            "headless": True,
+            "args": browser_args
+        }
+        if os.path.exists(config.CHROME_PATH):
+            launch_kwargs["executable_path"] = config.CHROME_PATH
+
+        browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
 
@@ -106,7 +113,7 @@ async def check_didi_status():
     esta_abierta = (status_desc.lower() != "cerrada" and status_code != 2)
 
     notificado = False
-    if state["last_status_desc"] != status_desc:
+    if force_notify or state["last_status_desc"] != status_desc:
         if esta_abierta:
             alerta = (
                 f"🚨 <b>¡LA TIENDA YA ESTÁ ABIERTA EN DIDI FOOD!</b> 🚨\n\n"
@@ -114,6 +121,16 @@ async def check_didi_status():
                 f"📍 <i>{address}</i>\n"
                 f"✨ Estado: <b>{status_desc}</b>\n\n"
                 f"👉 <a href='{config.STORE_URL}'>Abrir DiDi Food y pedir ahora</a>"
+            )
+            send_telegram_message(alerta)
+            notificado = True
+        elif force_notify:
+            alerta = (
+                f"ℹ️ <b>Estado actual de la tienda:</b>\n\n"
+                f"🏪 <b>{shop_name}</b>\n"
+                f"📊 Estado: <code>{status_desc}</code>\n"
+                f"📍 <i>{address}</i>\n\n"
+                f"<i>Seguiré monitoreando para avisarte en cuanto abra.</i>"
             )
             send_telegram_message(alerta)
             notificado = True
@@ -145,8 +162,8 @@ async def check_didi_status():
 def health():
     return {
         "status": "online",
-        "service": "DiDi Food Monitor Bot",
-        "store": config.STORE_NAME_DEFAULT,
+        "service": "Store Status Monitor API",
+        "store": state["shop_name"],
         "last_status": state["last_status_desc"],
         "last_check": state["last_check_time"],
         "total_checks": state["total_checks"]
@@ -154,7 +171,14 @@ def health():
 
 @app.get("/check")
 @app.post("/check")
-async def check_endpoint():
+async def check_endpoint(notify: bool = False):
     """Endpoint llamado por cron-job.org, tu celular o un webhook."""
-    result = await check_didi_status()
+    result = await check_didi_status(force_notify=notify)
     return result
+
+@app.get("/test-telegram")
+def test_telegram():
+    """Envía un mensaje de prueba inmediato a Telegram."""
+    hora = time.strftime("%H:%M:%S")
+    ok = send_telegram_message(f"🧪 <b>Prueba de conexión:</b> Bot operativo a las <code>{hora}</code>.")
+    return {"telegram_sent": ok, "time": hora}
