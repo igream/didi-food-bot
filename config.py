@@ -8,10 +8,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# --- DIDI FOOD CONFIG ---
-SHOP_ID = os.getenv("SHOP_ID", "5764607686453493981")
-STORE_URL = f"https://www.didi-food.com/es-MX/food/store/{SHOP_ID}/"
-STORE_NAME_DEFAULT = "THE TREE"
+# --- STORE CONFIG ---
+SHOP_ID = os.getenv("SHOP_ID", "")
+STORE_URL = f"https://www.didi-food.com/es-MX/food/store/{SHOP_ID}/" if SHOP_ID else ""
+STORE_NAME_DEFAULT = os.getenv("STORE_NAME", "Restaurante")
 
 # Intervalo entre revisiones (en segundos)
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))
