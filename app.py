@@ -1,7 +1,7 @@
 import os
 import time
 import json
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from playwright.async_api import async_playwright
 import config
 from notifier import send_telegram_message
@@ -261,12 +261,38 @@ def health():
         "total_checks": state.get("total_checks", 0)
     }
 
+is_checking = False
+
+async def run_check_task(force_notify: bool):
+    global is_checking
+    if is_checking:
+        print("[CHECK] Ya hay una consulta en curso. Omitiendo duplicado.")
+        return
+    is_checking = True
+    try:
+        await check_didi_status(force_notify=force_notify)
+    finally:
+        is_checking = False
+
 @app.get("/check")
 @app.post("/check")
-async def check_endpoint(notify: bool = False):
-    """Endpoint principal llamado periódicamente por cron-job.org o tu celular."""
-    result = await check_didi_status(force_notify=notify)
-    return result
+async def check_endpoint(background_tasks: BackgroundTasks, wait: bool = False, notify: bool = False):
+    """
+    Endpoint principal llamado periódicamente por cron-job.org o tu celular.
+    Por defecto responde inmediatamente en milisegundos (200 OK) y realiza
+    la consulta en segundo plano para evitar cualquier timeout de red.
+    """
+    if wait:
+        return await check_didi_status(force_notify=notify)
+
+    background_tasks.add_task(run_check_task, force_notify=notify)
+    return {
+        "status": "check_scheduled",
+        "message": "Consulta ejecutándose en segundo plano. Se notificará a Telegram si hay cambios.",
+        "last_status": state.get("last_status_desc"),
+        "last_category": state.get("last_category"),
+        "timestamp": time.strftime("%H:%M:%S")
+    }
 
 @app.get("/test-telegram")
 def test_telegram(tipo: str = "ambos"):
