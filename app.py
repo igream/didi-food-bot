@@ -318,3 +318,38 @@ def test_telegram(tipo: str = "ambos"):
             f"<i>La tienda ya no está recibiendo pedidos. Te avisaré cuando vuelva a abrir.</i>"
         )
     return {"status": "ok", "tested_types": tipo, "time": hora}
+
+@app.get("/debug-telegram")
+def debug_telegram():
+    """Diagnóstico detallado de la conexión con Telegram desde Render."""
+    import requests
+    token = config.TELEGRAM_BOT_TOKEN
+    chat_id = config.TELEGRAM_CHAT_ID
+    if not token or not chat_id:
+        return {
+            "error": "missing_credentials",
+            "message": "TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no están configurados en Render.",
+            "token_present": bool(token),
+            "chat_id_present": bool(chat_id)
+        }
+    
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": "🔍 <b>Mensaje de diagnóstico</b>: Verificación directa desde el servidor de Render.",
+        "parse_mode": "HTML"
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        return {
+            "token_masked": token[:8] + "..." + token[-4:] if len(token) > 12 else "INVALID",
+            "chat_id": chat_id,
+            "status_code": r.status_code,
+            "telegram_response": r.json()
+        }
+    except Exception as e:
+        return {
+            "token_masked": token[:8] + "..." + token[-4:] if len(token) > 12 else "INVALID",
+            "chat_id": chat_id,
+            "error": str(e)
+        }
