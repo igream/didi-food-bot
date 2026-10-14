@@ -6,9 +6,38 @@ from playwright.async_api import async_playwright
 import config
 from notifier import send_telegram_message
 
-app = FastAPI(title="Store Status Monitor API", version="1.0.0")
+app = FastAPI(title="Store Status Monitor API", version="1.1.0")
 
-# Si se configuró la sesión por variable de entorno (Render Secret)
+# Archivo para persistir el estado entre reinicios o suspensiones de Render
+STATE_FILE = os.path.join(os.path.dirname(__file__), "state.json")
+
+def load_saved_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[WARN] Error leyendo state.json: {e}")
+    return {
+        "shop_name": config.STORE_NAME_DEFAULT,
+        "last_category": None,      # 'OPEN' o 'CLOSED'
+        "last_status_desc": None,   # 'Abierta', 'Cerrada', etc.
+        "last_status_code": None,
+        "last_check_time": None,
+        "total_checks": 0
+    }
+
+def save_state(state_data):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[ERROR] No se pudo guardar state.json: {e}")
+
+# Cargar estado guardado al iniciar
+state = load_saved_state()
+
+# Restaurar sesión desde variable de entorno de Render si existe
 session_env = os.getenv("DIDI_SESSION_DATA")
 if session_env and not os.path.exists(config.SESSION_FILE):
     try:
@@ -18,27 +47,45 @@ if session_env and not os.path.exists(config.SESSION_FILE):
     except Exception as e:
         print(f"[INIT ERROR] No se pudo restaurar la sesión: {e}")
 
-# Estado en memoria
-state = {
-    "shop_name": config.STORE_NAME_DEFAULT,
-    "last_status_desc": "Desconocido",
-    "last_status_code": None,
-    "last_check_time": None,
-    "total_checks": 0
-}
+def classify_store_state(status_desc: str, status_code: int, order_available: int) -> str:
+    """
+    Clasifica de manera inteligente si la tienda está ABIERTA o CERRADA.
+    """
+    desc = (status_desc or "").lower()
+    
+    # Indicadores definitivos de cerrado
+    if "cerrad" in desc or "fuera de horario" in desc or status_code == 2:
+        return "CLOSED"
+    
+    # Indicadores de abierto
+    if "abiert" in desc or status_code == 1 or order_available == 1:
+        return "OPEN"
+    
+    # Casos como 'Fuera del límite de entrega' o restricciones temporales
+    if "fuera del límite" in desc or status_code == 3:
+        return "OPEN"
+
+    return "UNKNOWN"
 
 async def check_didi_status(force_notify: bool = False):
-    """Realiza la consulta a DiDi Food con Playwright de forma asíncrona."""
+    """Realiza la consulta a DiDi Food con Playwright optimizado para bajo consumo de RAM."""
     timestamp = time.strftime("%H:%M:%S")
-    state["total_checks"] += 1
+    state["total_checks"] = state.get("total_checks", 0) + 1
     state["last_check_time"] = timestamp
 
+    if not config.STORE_URL:
+        return {
+            "success": False,
+            "error": "missing_config",
+            "message": "Falta la variable de entorno SHOP_ID en Render."
+        }
+
+    # Banderas optimizadas para bajo consumo de RAM
     browser_args = [
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
-        "--single-process"
     ]
 
     api_data = {}
@@ -56,6 +103,7 @@ async def check_didi_status(force_notify: bool = False):
             "headless": True,
             "args": browser_args
         }
+        # En Windows local usamos Chrome instalado; en Render Docker usa el Chromium interno
         if os.path.exists(config.CHROME_PATH):
             launch_kwargs["executable_path"] = config.CHROME_PATH
 
@@ -84,7 +132,7 @@ async def check_didi_status(force_notify: bool = False):
 
         try:
             await page.goto(config.STORE_URL, wait_until="load", timeout=30000)
-            await page.wait_for_timeout(3500)
+            await page.wait_for_timeout(3000)
         except Exception as e:
             print(f"[{timestamp}] Advertencia al cargar página: {e}")
 
@@ -107,53 +155,96 @@ async def check_didi_status(force_notify: bool = False):
     shop_name = api_data.get("shopName", config.STORE_NAME_DEFAULT)
     status_desc = api_data.get("cShopStatusDesc", "Desconocido")
     status_code = api_data.get("cShopStatus")
+    order_available = api_data.get("isRealTimeOrderAvailableV3", 0)
     address = api_data.get("addr", "")
 
-    state["shop_name"] = shop_name
-    esta_abierta = (status_desc.lower() != "cerrada" and status_code != 2)
+    current_category = classify_store_state(status_desc, status_code, order_available)
+    previous_category = state.get("last_category")
+    previous_desc = state.get("last_status_desc")
 
     notificado = False
-    if force_notify or state["last_status_desc"] != status_desc:
-        if esta_abierta:
+    notif_type = None
+
+    # Lógica inteligente de cambio de estado
+    if previous_category is None:
+        # Primer arranque: registrar estado base sin alertar (a menos que se fuerce)
+        if force_notify:
+            if current_category == "OPEN":
+                alerta = (
+                    f"🚨 <b>¡LA TIENDA ESTÁ ABIERTA EN DIDI FOOD!</b> 🚨\n\n"
+                    f"🏪 <b>{shop_name}</b>\n"
+                    f"📍 <i>{address}</i>\n"
+                    f"✨ Estado: <b>{status_desc}</b>\n\n"
+                    f"👉 <a href='{config.STORE_URL}'>Abrir DiDi Food y pedir ahora</a>"
+                )
+            else:
+                alerta = (
+                    f"ℹ️ <b>Estado inicial de la tienda:</b>\n\n"
+                    f"🏪 <b>{shop_name}</b>\n"
+                    f"📊 Estado: <code>{status_desc}</code>\n"
+                    f"📍 <i>{address}</i>\n\n"
+                    f"<i>Te avisaré en cuanto abra o cierre.</i>"
+                )
+            send_telegram_message(alerta)
+            notificado = True
+            notif_type = "initial"
+
+    elif previous_category != current_category:
+        # Hubo una transición real de estado
+        if current_category == "OPEN":
+            # TIENDA ABRIÓ
             alerta = (
                 f"🚨 <b>¡LA TIENDA YA ESTÁ ABIERTA EN DIDI FOOD!</b> 🚨\n\n"
                 f"🏪 <b>{shop_name}</b>\n"
                 f"📍 <i>{address}</i>\n"
-                f"✨ Estado: <b>{status_desc}</b>\n\n"
-                f"👉 <a href='{config.STORE_URL}'>Abrir DiDi Food y pedir ahora</a>"
+                f"✨ Estado actual: <b>{status_desc}</b>\n\n"
+                f"👉 <a href='{config.STORE_URL}'>Haz clic aquí para ordenar ahora</a>"
             )
+            print(f"[{timestamp}] ALERTA ENVIADA: Tienda ABIERTA.")
             send_telegram_message(alerta)
             notificado = True
-        elif force_notify:
-            alerta = (
-                f"ℹ️ <b>Estado actual de la tienda:</b>\n\n"
-                f"🏪 <b>{shop_name}</b>\n"
-                f"📊 Estado: <code>{status_desc}</code>\n"
-                f"📍 <i>{address}</i>\n\n"
-                f"<i>Seguiré monitoreando para avisarte en cuanto abra.</i>"
-            )
-            send_telegram_message(alerta)
-            notificado = True
-        elif state["last_status_desc"] not in ["Desconocido", None]:
-            alerta = (
-                f"🔴 <b>La tienda {shop_name} ahora está CERRADA.</b>\n\n"
-                f"Estado actual: <i>{status_desc}</i>\n"
-                f"Seguiré monitoreando para avisarte cuando vuelva a abrir."
-            )
-            send_telegram_message(alerta)
-            notificado = True
+            notif_type = "opened"
 
-        state["last_status_desc"] = status_desc
-        state["last_status_code"] = status_code
+        elif current_category == "CLOSED":
+            # TIENDA CERRÓ
+            alerta = (
+                f"🔴 <b>LA TIENDA HA CERRADO EN DIDI FOOD</b> 🔴\n\n"
+                f"🏪 <b>{shop_name}</b>\n"
+                f"📊 Estado actual: <code>{status_desc}</code>\n\n"
+                f"<i>La tienda ya no está recibiendo pedidos por ahora. Te avisaré cuando vuelva a abrir.</i>"
+            )
+            print(f"[{timestamp}] ALERTA ENVIADA: Tienda CERRADA.")
+            send_telegram_message(alerta)
+            notificado = True
+            notif_type = "closed"
+
+    elif force_notify:
+        send_telegram_message(
+            f"ℹ️ <b>Revisión manual:</b>\n"
+            f"🏪 <b>{shop_name}</b>: <code>{status_desc}</code> (categoría: {current_category})"
+        )
+        notificado = True
+        notif_type = "forced"
+
+    # Actualizar estado y guardarlo persistentemente en state.json
+    state["shop_name"] = shop_name
+    state["last_category"] = current_category
+    state["last_status_desc"] = status_desc
+    state["last_status_code"] = status_code
+    state["last_check_time"] = timestamp
+    save_state(state)
 
     return {
         "success": True,
         "shop": shop_name,
+        "current_state": current_category,
+        "previous_state": previous_category,
         "status_desc": status_desc,
         "status_code": status_code,
-        "is_open": esta_abierta,
+        "is_open": (current_category == "OPEN"),
         "address": address,
         "notified_telegram": notificado,
+        "notification_type": notif_type,
         "timestamp": timestamp
     }
 
@@ -163,22 +254,41 @@ def health():
     return {
         "status": "online",
         "service": "Store Status Monitor API",
-        "store": state["shop_name"],
-        "last_status": state["last_status_desc"],
-        "last_check": state["last_check_time"],
-        "total_checks": state["total_checks"]
+        "store": state.get("shop_name", config.STORE_NAME_DEFAULT),
+        "last_category": state.get("last_category"),
+        "last_status": state.get("last_status_desc"),
+        "last_check": state.get("last_check_time"),
+        "total_checks": state.get("total_checks", 0)
     }
 
 @app.get("/check")
 @app.post("/check")
 async def check_endpoint(notify: bool = False):
-    """Endpoint llamado por cron-job.org, tu celular o un webhook."""
+    """Endpoint principal llamado periódicamente por cron-job.org o tu celular."""
     result = await check_didi_status(force_notify=notify)
     return result
 
 @app.get("/test-telegram")
-def test_telegram():
-    """Envía un mensaje de prueba inmediato a Telegram."""
+def test_telegram(tipo: str = "ambos"):
+    """
+    Envía mensajes de prueba inmediatos a Telegram para verificar formato.
+    tipo puede ser: 'abierta', 'cerrada' o 'ambos'.
+    """
     hora = time.strftime("%H:%M:%S")
-    ok = send_telegram_message(f"🧪 <b>Prueba de conexión:</b> Bot operativo a las <code>{hora}</code>.")
-    return {"telegram_sent": ok, "time": hora}
+    shop = state.get("shop_name", config.STORE_NAME_DEFAULT)
+
+    if tipo in ["abierta", "ambos"]:
+        send_telegram_message(
+            f"🚨 <b>[PRUEBA] ¡LA TIENDA YA ESTÁ ABIERTA EN DIDI FOOD!</b> 🚨\n\n"
+            f"🏪 <b>{shop}</b>\n"
+            f"✨ Estado: <b>Abierta</b> (Prueba a las {hora})\n\n"
+            f"👉 <a href='{config.STORE_URL}'>Haz clic aquí para ordenar ahora</a>"
+        )
+    if tipo in ["cerrada", "ambos"]:
+        send_telegram_message(
+            f"🔴 <b>[PRUEBA] LA TIENDA HA CERRADO EN DIDI FOOD</b> 🔴\n\n"
+            f"🏪 <b>{shop}</b>\n"
+            f"📊 Estado actual: <code>Cerrada</code> (Prueba a las {hora})\n\n"
+            f"<i>La tienda ya no está recibiendo pedidos. Te avisaré cuando vuelva a abrir.</i>"
+        )
+    return {"status": "ok", "tested_types": tipo, "time": hora}

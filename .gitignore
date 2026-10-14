@@ -1,6 +1,7 @@
 # Secretos y variables de entorno
 .env
 session.json
+state.json
 
 # Perfil del navegador local y cookies
 chrome_profile/
