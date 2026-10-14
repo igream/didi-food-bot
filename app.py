@@ -185,8 +185,7 @@ async def check_didi_status(force_notify: bool = False):
                 f"<i>Servicio iniciado en la nube. Te avisaré inmediatamente cuando abra o cierre.</i>"
             )
         print(f"[{timestamp}] Notificación de inicio/reinicio enviada a Telegram.")
-        send_telegram_message(alerta)
-        notificado = True
+        notificado = send_telegram_message(alerta)
         notif_type = "initial_startup"
 
     elif previous_category != current_category:
@@ -201,8 +200,7 @@ async def check_didi_status(force_notify: bool = False):
                 f"👉 <a href='{config.STORE_URL}'>Haz clic aquí para ordenar ahora</a>"
             )
             print(f"[{timestamp}] ALERTA ENVIADA: Tienda ABIERTA.")
-            send_telegram_message(alerta)
-            notificado = True
+            notificado = send_telegram_message(alerta)
             notif_type = "opened"
 
         elif current_category == "CLOSED":
@@ -214,16 +212,14 @@ async def check_didi_status(force_notify: bool = False):
                 f"<i>La tienda ya no está recibiendo pedidos por ahora. Te avisaré cuando vuelva a abrir.</i>"
             )
             print(f"[{timestamp}] ALERTA ENVIADA: Tienda CERRADA.")
-            send_telegram_message(alerta)
-            notificado = True
+            notificado = send_telegram_message(alerta)
             notif_type = "closed"
 
     elif force_notify:
-        send_telegram_message(
+        notificado = send_telegram_message(
             f"ℹ️ <b>Revisión manual:</b>\n"
             f"🏪 <b>{shop_name}</b>: <code>{status_desc}</code> (categoría: {current_category})"
         )
-        notificado = True
         notif_type = "forced"
 
     # Actualizar estado y guardarlo persistentemente en state.json
