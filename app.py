@@ -167,27 +167,27 @@ async def check_didi_status(force_notify: bool = False):
 
     # Lógica inteligente de cambio de estado
     if previous_category is None:
-        # Primer arranque: registrar estado base sin alertar (a menos que se fuerce)
-        if force_notify:
-            if current_category == "OPEN":
-                alerta = (
-                    f"🚨 <b>¡LA TIENDA ESTÁ ABIERTA EN DIDI FOOD!</b> 🚨\n\n"
-                    f"🏪 <b>{shop_name}</b>\n"
-                    f"📍 <i>{address}</i>\n"
-                    f"✨ Estado: <b>{status_desc}</b>\n\n"
-                    f"👉 <a href='{config.STORE_URL}'>Abrir DiDi Food y pedir ahora</a>"
-                )
-            else:
-                alerta = (
-                    f"ℹ️ <b>Estado inicial de la tienda:</b>\n\n"
-                    f"🏪 <b>{shop_name}</b>\n"
-                    f"📊 Estado: <code>{status_desc}</code>\n"
-                    f"📍 <i>{address}</i>\n\n"
-                    f"<i>Te avisaré en cuanto abra o cierre.</i>"
-                )
-            send_telegram_message(alerta)
-            notificado = True
-            notif_type = "initial"
+        # Primer chequeo tras arranque o reinicio del servicio: Notificar estado actual
+        if current_category == "OPEN":
+            alerta = (
+                f"🟢 <b>Monitor DiDi Food Operativo</b>\n\n"
+                f"🏪 <b>{shop_name}</b>\n"
+                f"✨ <b>Estado actual:</b> <code>{status_desc}</code> (¡Ya está abierta!)\n"
+                f"📍 <i>{address}</i>\n\n"
+                f"👉 <a href='{config.STORE_URL}'>Abrir DiDi Food y pedir ahora</a>"
+            )
+        else:
+            alerta = (
+                f"🟢 <b>Monitor DiDi Food Operativo</b>\n\n"
+                f"🏪 <b>{shop_name}</b>\n"
+                f"📊 <b>Estado actual:</b> <code>{status_desc}</code>\n"
+                f"📍 <i>{address}</i>\n\n"
+                f"<i>Servicio iniciado en la nube. Te avisaré inmediatamente cuando abra o cierre.</i>"
+            )
+        print(f"[{timestamp}] Notificación de inicio/reinicio enviada a Telegram.")
+        send_telegram_message(alerta)
+        notificado = True
+        notif_type = "initial_startup"
 
     elif previous_category != current_category:
         # Hubo una transición real de estado
